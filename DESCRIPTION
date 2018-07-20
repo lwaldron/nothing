@@ -6,8 +6,8 @@ Authors: Romain Francois <romain@r-enthusiasts.com>
 Description: A package about nothing
 Depends: R (>= 3.1.0)
 Imports:
-  mirbase.db
-  TCGAutils
-  survminer
+  mirbase.db,
+  TCGAutils,
+  curatedTCGAData
 License: GPL-2
 
