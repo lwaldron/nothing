@@ -1,3 +1,13 @@
+name: BiocCheck
+
+on:
+  push:
+    branches:
+      - devel
+  pull_request:
+    branches:
+      - devel
+
 jobs:
   bioccheck:
     runs-on: ubuntu-latest
