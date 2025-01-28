@@ -18,9 +18,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Install R Package Dependencies
+      - name: Install remotes Package
         run: |
-          Rscript -e "BiocManager::install(c('BiocCheck'))"
+          Rscript -e "install.packages('remotes')"
+
+      - name: Install Package Dependencies
+        run: |
+          Rscript -e "options(repos = BiocManager::repositories()); remotes::install_deps(dependencies = TRUE)"
 
       - name: Build Package
         run: R CMD build .
